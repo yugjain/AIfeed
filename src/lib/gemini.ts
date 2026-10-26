@@ -20,6 +20,7 @@ function getGeminiClient(): { client: GoogleGenAI | null; model: string; hasKey:
 interface CurationResultItem {
   id: string;
   relevance_score: number;
+  technicality_score: number;
   category: string;
   tldr: string;
   why_it_matters: string;
@@ -36,19 +37,17 @@ export async function curateBatchWithGemini(
   const settings = getSettings();
   const userInterests = settings.user_interests_prompt;
 
-  // If no Gemini key is provided, run heuristic smart curation
+  // Fallback to heuristic curation if no key
   if (!hasKey || !client) {
-    console.log('No Gemini API key configured. Applying algorithmic heuristic curation...');
     applyHeuristicCuration(items);
     return {
       processed: items.length,
       success: true,
       fallback: true,
-      message: 'Curated using algorithmic heuristics. Add your Gemini API Key in Settings for AI summaries & custom ranking.',
+      message: 'Curated with algorithmic heuristics. Connect Gemini API in Settings for personalized summaries.',
     };
   }
 
-  // Curate in batches of 12 to ensure fast responses and high quality
   const batchSize = 12;
   let totalProcessed = 0;
 
@@ -60,42 +59,58 @@ export async function curateBatchWithGemini(
       source: `${item.source_name} (${item.source_type})`,
       score: item.score,
       comments_count: item.comments_count,
-      snippet: item.raw_summary ? item.raw_summary.slice(0, 400) : '',
+      snippet: item.raw_summary ? item.raw_summary.slice(0, 450) : '',
     }));
 
     const prompt = `
-You are an expert AI researcher and technical curator.
-Your task is to analyze, score, categorize, and summarize the following AI feed items for a developer/builder.
+You are a Senior AI Product Strategist and Technology Curator.
+Your goal is to curate a practical, high-utility feed for someone who wants to know about USEFUL AI PRODUCTS, REAL-WORLD TOOLS, and MAJOR BREAKTHROUGHS they can actually use today.
 
-USER'S CURATION PROFILE:
+USER CURATION PROFILE:
 """
 ${userInterests}
 """
 
+CORE GUIDELINES:
+1. RUTHLESSLY IDENTIFY TECHNICALITY LEVEL (technicality_score from 1 to 5):
+   - 1 = General / Consumer AI (ChatGPT/Claude updates, accessible web apps, productivity tools)
+   - 2 = Practical Product / Applied Tool (image/video gen, workflow builders, Perplexity, search tools)
+   - 3 = High-Level Builder Tool (accessible APIs, no-code agents, Cursor/Claude Code workflows)
+   - 4 = Systems / Technical Engineering (fine-tuning stacks, inference engines, complex frameworks)
+   - 5 = Dense Academic & Math (ArXiv theorem proofs, loss derivations, academic benchmarks)
+
+2. RELEVANCE SCORE (0 to 100):
+   - Heavily FAVOR Level 1-3 items (Practical Products, Workflows, Usable Tools). Give them higher relevance (75-98).
+   - Heavily DOWNRANK Level 4-5 items (Dense academic papers, low-level repo internals, CUDA code). Give them lower relevance (30-65).
+
+3. PLAIN-ENGLISH TLDR:
+   - 1-2 concise sentences explaining WHAT THE PRODUCT / TOOL / DEVELOPMENT DOES in simple, human language.
+   - Absolutely NO academic jargon (do NOT say "kv-cache", "attention sink", "stochastic gradient", "inductive bias"). Explain the concrete capability.
+
+4. "WHY IT MATTERS" (HOW YOU CAN USE IT):
+   - 1 sentence highlighting real-world utility: e.g. "Automates creating short video clips from text in under 60 seconds." or "Allows Claude to edit local project files without copy-pasting."
+
 ALLOWED CATEGORIES:
-- "Agents & Tooling"
-- "Models & Weights"
-- "Research Paper"
-- "Open Source Repo"
-- "Industry & Launches"
-- "Tutorials & Eng"
+- "Practical Products & Apps"
+- "Tools & Workflows"
+- "Major Breakthroughs"
+- "Developer Stacks"
+- "Research & Code"
 
 ITEMS TO CURATE:
 ${JSON.stringify(simplifiedItems, null, 2)}
 
-INSTRUCTIONS:
-For EACH item, return a JSON array of objects with the exact schema:
+Return ONLY a JSON array matching this schema:
 [
   {
     "id": "<matching item id>",
-    "relevance_score": <integer from 0 to 100 based on quality and relevance to the user profile>,
+    "relevance_score": <integer 0-100>,
+    "technicality_score": <integer 1-5>,
     "category": "<one of the allowed categories>",
-    "tldr": "<concise 1-2 sentence factual summary without hype>",
-    "why_it_matters": "<1 sentence explaining why an AI builder/engineer should care>"
+    "tldr": "<plain English 1-2 sentence description>",
+    "why_it_matters": "<1 sentence on how to use it / practical benefit>"
   }
 ]
-
-Return ONLY valid JSON matching this schema.
 `;
 
     try {
@@ -114,7 +129,6 @@ Return ONLY valid JSON matching this schema.
       try {
         parsed = JSON.parse(text);
       } catch (parseErr) {
-        // Fallback: strip markdown code blocks if present
         const jsonMatch = text.match(/\[\s*\{[\s\S]*\}\s*\]/);
         if (jsonMatch) {
           parsed = JSON.parse(jsonMatch[0]);
@@ -127,20 +141,19 @@ Return ONLY valid JSON matching this schema.
             updateItemAI(res.id, {
               ai_tldr: res.tldr || '',
               ai_why_it_matters: res.why_it_matters || '',
-              ai_category: res.category || 'Industry & Launches',
+              ai_category: res.category || 'Practical Products & Apps',
               ai_relevance_score: Math.min(100, Math.max(0, Math.round(res.relevance_score))),
+              technicality_score: Math.min(5, Math.max(1, Math.round(res.technicality_score || 2))),
             });
             totalProcessed++;
           }
         }
       } else {
-        // Fallback to heuristic for this batch if empty
         applyHeuristicCuration(batch);
         totalProcessed += batch.length;
       }
     } catch (err: any) {
       console.error('Error generating curation with Gemini:', err?.message || err);
-      // Fallback for this batch
       applyHeuristicCuration(batch);
       totalProcessed += batch.length;
     }
@@ -150,49 +163,50 @@ Return ONLY valid JSON matching this schema.
 }
 
 function applyHeuristicCuration(items: FeedItem[]) {
-  const agentKeywords = ['agent', 'tool', 'langchain', 'crew', 'autogen', 'mcp', 'copilot', 'coding'];
-  const modelKeywords = ['llama', 'deepseek', 'gpt', 'claude', 'gemini', 'qwen', 'mistral', 'weights', '70b', '8b'];
-  const paperKeywords = ['paper', 'arxiv', 'eval', 'benchmark', 'attention', 'reasoning', 'transformer', 'loss'];
-  const repoKeywords = ['github', 'repo', 'open source', 'release', 'stars', 'v1.', 'v0.'];
-
   for (const item of items) {
     const text = `${item.title} ${item.raw_summary || ''}`.toLowerCase();
-    let category = 'Industry & Launches';
-    let baseScore = 60;
+    let category = 'Practical Products & Apps';
+    let technicality = 2;
+    let baseScore = 75;
 
-    if (item.source_type === 'arxiv' || paperKeywords.some((k) => text.includes(k))) {
-      category = 'Research Paper';
-      baseScore = 78;
-    } else if (item.source_type === 'github' || repoKeywords.some((k) => text.includes(k))) {
-      category = 'Open Source Repo';
-      baseScore = 82;
-    } else if (agentKeywords.some((k) => text.includes(k))) {
-      category = 'Agents & Tooling';
+    if (item.source_type === 'arxiv') {
+      category = 'Research & Code';
+      technicality = 5;
+      baseScore = 45; // Demoted
+    } else if (item.source_type === 'github') {
+      category = 'Developer Stacks';
+      technicality = 3;
+      baseScore = 70;
+    } else if (item.source_type === 'producthunt' || text.includes('app') || text.includes('tool') || text.includes('launch')) {
+      category = 'Practical Products & Apps';
+      technicality = 1;
+      baseScore = 88; // Boosted
+    } else if (text.includes('workflow') || text.includes('prompt') || text.includes('guide')) {
+      category = 'Tools & Workflows';
+      technicality = 2;
       baseScore = 85;
-    } else if (modelKeywords.some((k) => text.includes(k))) {
-      category = 'Models & Weights';
-      baseScore = 84;
-    }
-
-    // Adjust score based on community engagement
-    if (item.score > 200 || item.comments_count > 100) {
-      baseScore += 10;
-    } else if (item.score > 50) {
-      baseScore += 5;
+    } else if (text.includes('model') || text.includes('gemini') || text.includes('claude') || text.includes('chatgpt')) {
+      category = 'Major Breakthroughs';
+      technicality = 2;
+      baseScore = 90;
     }
 
     const tldr =
-      item.raw_summary && item.raw_summary.length > 30
-        ? item.raw_summary.slice(0, 180) + '...'
+      item.raw_summary && item.raw_summary.length > 25
+        ? item.raw_summary.slice(0, 180).replace(/\s+/g, ' ') + '...'
         : item.title;
 
-    const whyItMatters = `Trending in ${item.source_name} with ${item.score} upvotes/stars and active community discussion.`;
+    const whyItMatters =
+      technicality <= 2
+        ? `Practical AI tool trending with community buzz in ${item.source_name}.`
+        : `Developer-level implementation details and codebase.`;
 
     updateItemAI(item.id, {
       ai_tldr: tldr,
       ai_why_it_matters: whyItMatters,
       ai_category: category,
       ai_relevance_score: Math.min(99, baseScore),
+      technicality_score: technicality,
     });
   }
 }
@@ -200,8 +214,11 @@ function applyHeuristicCuration(items: FeedItem[]) {
 export async function generateExecutiveBriefing(topItems: FeedItem[]): Promise<string> {
   const { client, model, hasKey } = getGeminiClient();
 
-  if (!hasKey || !client || topItems.length === 0) {
-    // Generate algorithmic digest
+  // Filter top items to practical products and accessible breakthroughs only
+  const practicalTopItems = topItems.filter((it) => (it.technicality_score ?? 2) <= 3).slice(0, 8);
+  const itemsToUse = practicalTopItems.length >= 3 ? practicalTopItems : topItems.slice(0, 8);
+
+  if (!hasKey || !client || itemsToUse.length === 0) {
     const dateStr = new Date().toLocaleDateString('en-US', {
       weekday: 'long',
       month: 'short',
@@ -209,18 +226,16 @@ export async function generateExecutiveBriefing(topItems: FeedItem[]): Promise<s
     });
 
     const lines = [
-      `### ⚡ AI Radar Digest — ${dateStr}`,
+      `### ⚡ Practical AI Radar Briefing — ${dateStr}`,
       '',
-      topItems.length > 0
-        ? `Here are the top ${Math.min(5, topItems.length)} AI breakthroughs and discussions trending right now:`
-        : 'Feed synced! Configure your Gemini API key in Settings to generate a personalized executive briefing.',
+      'Here are the most useful practical AI products, tools, and updates you can use right now:',
       '',
     ];
 
-    topItems.slice(0, 5).forEach((item, idx) => {
+    itemsToUse.slice(0, 5).forEach((item, idx) => {
       lines.push(
         `${idx + 1}. **[${item.title}](${item.url})** (${item.source_name}) — ${
-          item.ai_tldr || item.raw_summary?.slice(0, 100) || 'Active discussion'
+          item.ai_tldr || item.raw_summary?.slice(0, 120) || 'Practical tool update'
         }`
       );
     });
@@ -238,12 +253,13 @@ export async function generateExecutiveBriefing(topItems: FeedItem[]): Promise<s
   }
 
   const prompt = `
-You are the Chief AI Officer delivering a 60-second executive intelligence briefing for a busy AI engineer / founder.
-Synthesize the following top-ranked AI feed items into an engaging, high-density markdown briefing.
+You are a senior tech scout delivering an executive intelligence brief for a creator, founder, and builder.
+Your audience wants ACTIONABLE, PRACTICAL AI developments — new tools they can use, major model capability jumps, and workflow shortcuts.
+DO NOT focus on academic papers, mathematical derivations, or low-level systems code.
 
-TOP ITEMS:
+TOP PRACTICAL ITEMS:
 ${JSON.stringify(
-  topItems.slice(0, 10).map((it) => ({
+  itemsToUse.map((it) => ({
     title: it.title,
     source: it.source_name,
     category: it.ai_category,
@@ -255,14 +271,13 @@ ${JSON.stringify(
   2
 )}
 
-FORMATTING REQUIREMENTS:
-- Start with a punchy 1-2 sentence high-level synthesis of what theme dominates today (e.g. reasoning models, agentic tool use, local inference optimizations).
-- Provide 3 distinct highlights categorized by:
-  - 🚀 **Breakthrough / Model Release**
-  - 🛠️ **Developer & Agent Tooling**
-  - 📄 **Research / Architecture Insight**
-- Include markdown links to the source URLs.
-- Keep it under 250 words total. No fluff.
+FORMATTING:
+- Start with a punchy 1-2 sentence summary of the biggest practical takeaway today.
+- Include 3 concise sections with markdown links:
+  - 🛠️ **New Tools & Products You Can Use**
+  - 🚀 **Major Capability Unlocks**
+  - ⚡ **Workflow & Productivity Hacks**
+- Keep total length under 220 words. High clarity, zero jargon.
 `;
 
   try {
@@ -292,7 +307,38 @@ FORMATTING REQUIREMENTS:
 
     return content;
   } catch (err: any) {
-    console.error('Error generating executive briefing:', err);
-    throw err;
+    console.error('Error generating executive briefing with Gemini:', err.message || err);
+    // Graceful fallback digest if API has a 503 / rate spike
+    const dateStr = new Date().toLocaleDateString('en-US', {
+      weekday: 'long',
+      month: 'short',
+      day: 'numeric',
+    });
+
+    const lines = [
+      `### ⚡ Practical AI Radar Briefing — ${dateStr}`,
+      '',
+      '**Top practical takeaways & actionable tools trending today:**',
+      '',
+    ];
+
+    itemsToUse.slice(0, 5).forEach((item, idx) => {
+      lines.push(
+        `${idx + 1}. **[${item.title}](${item.url})** (${item.source_name}) — ${
+          item.ai_tldr || item.raw_summary?.slice(0, 140) || 'Practical tool update'
+        }`
+      );
+    });
+
+    const fallbackDigest = lines.join('\n');
+    setSetting(
+      'executive_briefing',
+      JSON.stringify({
+        date: dateStr,
+        content: fallbackDigest,
+        generated_at: new Date().toISOString(),
+      })
+    );
+    return fallbackDigest;
   }
 }

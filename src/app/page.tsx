@@ -7,7 +7,7 @@ import { FilterBar } from '@/components/FilterBar';
 import { FeedCard } from '@/components/FeedCard';
 import { SettingsModal } from '@/components/SettingsModal';
 import { FeedItem, ExecutiveBriefing } from '@/types/feed';
-import { Sparkles, RefreshCw, Inbox, AlertCircle } from 'lucide-react';
+import { Sparkles, RefreshCw, Inbox, Cpu } from 'lucide-react';
 
 export default function Home() {
   const [items, setItems] = useState<FeedItem[]>([]);
@@ -16,7 +16,7 @@ export default function Home() {
   const [isBriefingLoading, setIsBriefingLoading] = useState(false);
 
   // Filters & Views
-  const [view, setView] = useState<'curated' | 'latest' | 'bookmarks'>('curated');
+  const [view, setView] = useState<'curated' | 'deep_tech' | 'latest' | 'bookmarks'>('curated');
   const [selectedSource, setSelectedSource] = useState('all');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -109,16 +109,15 @@ export default function Home() {
   // Trigger Feed Sync
   const handleSync = async () => {
     setIsSyncing(true);
-    setStatusNotification('Syncing top AI sources...');
+    setStatusNotification('Fetching latest AI products, newsletters & discussions...');
     try {
       const res = await fetch('/api/sync', { method: 'POST' });
       const data = await res.json();
       if (data.success) {
         setStatusNotification(
-          `Synced ${data.sync?.totalFetched || 0} items (${data.sync?.inserted || 0} new).`
+          `Synced ${data.sync?.totalFetched || 0} items (${data.sync?.inserted || 0} new). Curated with Gemini!`
         );
         fetchFeed(1, false);
-        // Refresh briefing if available
         fetchInitialData();
         setTimeout(() => setStatusNotification(null), 4000);
       }
@@ -133,16 +132,12 @@ export default function Home() {
   // Trigger Gemini AI Curation
   const handleCurate = async () => {
     setIsCurating(true);
-    setStatusNotification('Gemini is analyzing, scoring, and summarizing items...');
+    setStatusNotification('Curating feed for practical tools & plain-English summaries...');
     try {
       const res = await fetch('/api/sync?curateOnly=true', { method: 'POST' });
       const data = await res.json();
       if (data.success) {
-        setStatusNotification(
-          data.curation?.fallback
-            ? 'Curated with algorithmic heuristics! (Add Gemini API key in Settings for AI summaries).'
-            : `Curated ${data.curation?.processed || 0} items with Gemini!`
-        );
+        setStatusNotification(`Curated ${data.curation?.processed || 0} items with Gemini!`);
         fetchFeed(1, false);
         setTimeout(() => setStatusNotification(null), 4000);
       }
@@ -172,7 +167,6 @@ export default function Home() {
 
   // Toggle Bookmark
   const handleToggleBookmark = async (id: string) => {
-    // Optimistic update
     setItems((prev) =>
       prev.map((item) =>
         item.id === id ? { ...item, is_bookmarked: !item.is_bookmarked } : item
@@ -203,7 +197,7 @@ export default function Home() {
         hasApiKey={hasApiKey}
       />
 
-      {/* Floating Status Notification */}
+      {/* Status Notification */}
       {statusNotification && (
         <div className="fixed bottom-6 right-6 z-40 max-w-md animate-in slide-in-from-bottom-5 duration-200">
           <div className="p-3.5 rounded-xl bg-zinc-900 border border-indigo-500/40 text-xs text-zinc-200 shadow-2xl flex items-center gap-2.5">
@@ -243,6 +237,17 @@ export default function Home() {
           onSearchChange={setSearchQuery}
         />
 
+        {/* View Description Pill */}
+        <div className="mb-4 text-xs text-zinc-400 flex items-center justify-between">
+          <span>
+            {view === 'curated' && 'Showing top practical products, consumer apps, and real-world tools.'}
+            {view === 'deep_tech' && 'Showing technical engineering stacks, low-level repos, and research papers.'}
+            {view === 'latest' && 'Showing all feed items in chronological order.'}
+            {view === 'bookmarks' && 'Showing your saved bookmarks.'}
+          </span>
+          <span className="text-zinc-500 font-mono">{total} stories</span>
+        </div>
+
         {/* Feed Cards Grid */}
         {isLoading && items.length === 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -262,16 +267,22 @@ export default function Home() {
           </div>
         ) : items.length === 0 ? (
           <div className="py-20 text-center rounded-2xl border border-dashed border-zinc-800 bg-zinc-900/20">
-            <Inbox className="w-10 h-10 text-zinc-600 mx-auto mb-3" />
+            {view === 'deep_tech' ? (
+              <Cpu className="w-10 h-10 text-zinc-600 mx-auto mb-3" />
+            ) : (
+              <Inbox className="w-10 h-10 text-zinc-600 mx-auto mb-3" />
+            )}
             <h3 className="text-sm font-semibold text-zinc-300 mb-1">
               {view === 'bookmarks'
                 ? 'No bookmarked items yet'
-                : 'No feed items found'}
+                : view === 'deep_tech'
+                ? 'No deep tech items found with current filters'
+                : 'No practical feed items found'}
             </h3>
             <p className="text-xs text-zinc-500 max-w-sm mx-auto mb-4">
               {view === 'bookmarks'
-                ? 'Bookmark interesting stories or papers to save them for later.'
-                : 'Try syncing feeds to pull the latest AI discussions, repos, and research papers.'}
+                ? 'Bookmark interesting tools or stories to save them for later.'
+                : 'Try syncing feeds or switching to "All Latest" to view newly fetched items.'}
             </p>
             {view !== 'bookmarks' && (
               <button

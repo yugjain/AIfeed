@@ -24,6 +24,7 @@ export interface FeedItem {
   ai_why_it_matters: string | null;
   ai_category: string | null;
   ai_relevance_score: number | null;
+  technicality_score?: number | null; // 1 (General/App) to 5 (Dense Academic/Kernel)
   is_bookmarked: boolean;
   is_read: boolean;
   created_at: string;
