@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Header } from '@/components/Header';
 import { ExecutiveBriefingCard } from '@/components/ExecutiveBriefingCard';
 import { FilterBar } from '@/components/FilterBar';
@@ -9,11 +9,16 @@ import { SettingsModal } from '@/components/SettingsModal';
 import { FeedItem, ExecutiveBriefing } from '@/types/feed';
 import { Sparkles, RefreshCw, Inbox, Cpu } from 'lucide-react';
 
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || '';
+
 export default function Home() {
   const [items, setItems] = useState<FeedItem[]>([]);
   const [total, setTotal] = useState(0);
   const [briefing, setBriefing] = useState<ExecutiveBriefing | null>(null);
   const [isBriefingLoading, setIsBriefingLoading] = useState(false);
+
+  // Cached full store for static / GitHub Pages hosting
+  const staticStoreRef = useRef<any>(null);
 
   // Filters & Views
   const [view, setView] = useState<'curated' | 'deep_tech' | 'latest' | 'bookmarks'>('curated');
@@ -41,10 +46,94 @@ export default function Home() {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
+  // Client-side filtering helper for static deployment
+  const filterStaticItems = useCallback(
+    (allRawItems: FeedItem[], currentPage = 1, append = false) => {
+      let savedBookmarks: string[] = [];
+      try {
+        const stored = localStorage.getItem('aifeed_bookmarks');
+        if (stored) savedBookmarks = JSON.parse(stored);
+      } catch {}
+
+      const filtered = allRawItems
+        .map((item) => ({
+          ...item,
+          is_bookmarked: item.is_bookmarked || savedBookmarks.includes(item.id),
+        }))
+        .filter((item) => {
+          if (view === 'bookmarks' && !item.is_bookmarked) return false;
+          if (view === 'curated') {
+            if (item.source_type === 'arxiv') return false;
+            if (item.technicality_score && item.technicality_score >= 4) return false;
+          }
+          if (view === 'deep_tech') {
+            const isDeep = item.source_type === 'arxiv' || item.source_type === 'github';
+            const isHighTech = (item.technicality_score ?? 0) >= 4;
+            const isTechCategory = item.ai_category === 'Research & Code' || item.ai_category === 'Developer Stacks';
+            if (!isDeep && !isHighTech && !isTechCategory) return false;
+          }
+          if (selectedSource && selectedSource !== 'all' && item.source_type !== selectedSource) return false;
+          if (selectedCategory && selectedCategory !== 'all' && item.ai_category !== selectedCategory) return false;
+
+          if (debouncedSearch && debouncedSearch.trim()) {
+            const q = debouncedSearch.trim().toLowerCase();
+            const matchTitle = item.title.toLowerCase().includes(q);
+            const matchSummary = item.raw_summary?.toLowerCase().includes(q) ?? false;
+            const matchTldr = item.ai_tldr?.toLowerCase().includes(q) ?? false;
+            const matchWhy = item.ai_why_it_matters?.toLowerCase().includes(q) ?? false;
+            if (!matchTitle && !matchSummary && !matchTldr && !matchWhy) return false;
+          }
+          return true;
+        });
+
+      // Sort
+      if (view === 'curated') {
+        filtered.sort((a, b) => {
+          const techBonusA = (5 - (a.technicality_score ?? 2)) * 10;
+          const techBonusB = (5 - (b.technicality_score ?? 2)) * 10;
+          const scoreA = (a.ai_relevance_score ?? 60) + techBonusA + Math.min(a.score, 300) * 0.1;
+          const scoreB = (b.ai_relevance_score ?? 60) + techBonusB + Math.min(b.score, 300) * 0.1;
+          if (Math.abs(scoreA - scoreB) > 5) return scoreB - scoreA;
+          return new Date(b.published_at).getTime() - new Date(a.published_at).getTime();
+        });
+      } else if (view === 'deep_tech') {
+        filtered.sort((a, b) => {
+          const scoreA = (a.ai_relevance_score ?? 50) + Math.min(a.score, 500);
+          const scoreB = (b.ai_relevance_score ?? 50) + Math.min(b.score, 500);
+          if (scoreA !== scoreB) return scoreB - scoreA;
+          return new Date(b.published_at).getTime() - new Date(a.published_at).getTime();
+        });
+      } else {
+        filtered.sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime());
+      }
+
+      const limit = 30;
+      const offset = (currentPage - 1) * limit;
+      const paginated = filtered.slice(offset, offset + limit);
+
+      if (append) {
+        setItems((prev) => [...prev, ...paginated]);
+      } else {
+        setItems(paginated);
+      }
+      setTotal(filtered.length);
+      setHasMore(paginated.length === limit && offset + limit < filtered.length);
+      setIsLoading(false);
+    },
+    [view, selectedSource, selectedCategory, debouncedSearch]
+  );
+
   // Fetch feed items
   const fetchFeed = useCallback(
     async (currentPage = 1, append = false) => {
       setIsLoading(true);
+
+      // If we already loaded the static store or know we are static
+      if (staticStoreRef.current) {
+        filterStaticItems(staticStoreRef.current.items || [], currentPage, append);
+        return;
+      }
+
       try {
         const params = new URLSearchParams({
           view,
@@ -56,8 +145,9 @@ export default function Home() {
         });
 
         const res = await fetch(`/api/feed?${params.toString()}`);
-        const data = await res.json();
+        if (!res.ok) throw new Error('API route unavailable');
 
+        const data = await res.json();
         if (data.success) {
           if (append) {
             setItems((prev) => [...prev, ...data.data]);
@@ -65,15 +155,32 @@ export default function Home() {
             setItems(data.data);
           }
           setTotal(data.total);
-          setHasMore(data.data.length === 30 && (currentPage * 30) < data.total);
+          setHasMore(data.data.length === 30 && currentPage * 30 < data.total);
+          setIsLoading(false);
+          return;
         }
-      } catch (err) {
-        console.error('Failed to load feed:', err);
+      } catch {
+        // Fallback to static JSON file (works on GitHub Pages!)
+        try {
+          const staticUrl = `${BASE_PATH}/data/feed_store.json`;
+          const staticRes = await fetch(staticUrl);
+          if (staticRes.ok) {
+            const storeData = await staticRes.json();
+            staticStoreRef.current = storeData;
+            if (storeData.settings?.executive_briefing && !briefing) {
+              setBriefing(storeData.settings.executive_briefing);
+            }
+            filterStaticItems(storeData.items || [], currentPage, append);
+            return;
+          }
+        } catch (staticErr) {
+          console.error('Failed to load static feed store:', staticErr);
+        }
       } finally {
         setIsLoading(false);
       }
     },
-    [view, selectedSource, selectedCategory, debouncedSearch]
+    [view, selectedSource, selectedCategory, debouncedSearch, filterStaticItems, briefing]
   );
 
   // Fetch briefing & initial settings
@@ -84,18 +191,34 @@ export default function Home() {
         fetch('/api/briefing'),
       ]);
 
-      const settingsData = await settingsRes.json();
-      if (settingsData.success) {
-        setHasApiKey(settingsData.settings.has_api_key);
+      if (settingsRes.ok) {
+        const settingsData = await settingsRes.json();
+        if (settingsData.success) {
+          setHasApiKey(settingsData.settings.has_api_key);
+        }
       }
 
-      const briefingData = await briefingRes.json();
-      if (briefingData.success && briefingData.briefing) {
-        setBriefing(briefingData.briefing);
+      if (briefingRes.ok) {
+        const briefingData = await briefingRes.json();
+        if (briefingData.success && briefingData.briefing) {
+          setBriefing(briefingData.briefing);
+          return;
+        }
       }
-    } catch (err) {
-      console.error('Error fetching settings/briefing:', err);
-    }
+    } catch {}
+
+    // Static fallback for briefing
+    try {
+      const staticUrl = `${BASE_PATH}/data/feed_store.json`;
+      const staticRes = await fetch(staticUrl);
+      if (staticRes.ok) {
+        const storeData = await staticRes.json();
+        staticStoreRef.current = storeData;
+        if (storeData.settings?.executive_briefing) {
+          setBriefing(storeData.settings.executive_briefing);
+        }
+      }
+    } catch {}
   };
 
   useEffect(() => {
@@ -112,21 +235,24 @@ export default function Home() {
     setStatusNotification('Fetching latest AI products, newsletters & discussions...');
     try {
       const res = await fetch('/api/sync', { method: 'POST' });
-      const data = await res.json();
-      if (data.success) {
-        setStatusNotification(
-          `Synced ${data.sync?.totalFetched || 0} items (${data.sync?.inserted || 0} new). Curated with Gemini!`
-        );
-        fetchFeed(1, false);
-        fetchInitialData();
-        setTimeout(() => setStatusNotification(null), 4000);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setStatusNotification(
+            `Synced ${data.sync?.totalFetched || 0} items (${data.sync?.inserted || 0} new). Curated with Gemini!`
+          );
+          fetchFeed(1, false);
+          fetchInitialData();
+          setTimeout(() => setStatusNotification(null), 4000);
+          return;
+        }
       }
-    } catch (err) {
-      console.error('Sync failed:', err);
-      setStatusNotification('Sync encountered an error.');
-    } finally {
-      setIsSyncing(false);
-    }
+    } catch {}
+
+    // If on static GitHub Pages
+    setStatusNotification('Feed is refreshed via GitHub Actions automation.');
+    setTimeout(() => setStatusNotification(null), 3000);
+    setIsSyncing(false);
   };
 
   // Trigger Gemini AI Curation
@@ -135,18 +261,21 @@ export default function Home() {
     setStatusNotification('Curating feed for practical tools & plain-English summaries...');
     try {
       const res = await fetch('/api/sync?curateOnly=true', { method: 'POST' });
-      const data = await res.json();
-      if (data.success) {
-        setStatusNotification(`Curated ${data.curation?.processed || 0} items with Gemini!`);
-        fetchFeed(1, false);
-        setTimeout(() => setStatusNotification(null), 4000);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setStatusNotification(`Curated ${data.curation?.processed || 0} items with Gemini!`);
+          fetchFeed(1, false);
+          setTimeout(() => setStatusNotification(null), 4000);
+          setIsCurating(false);
+          return;
+        }
       }
-    } catch (err) {
-      console.error('Curation failed:', err);
-      setStatusNotification('Curation failed.');
-    } finally {
-      setIsCurating(false);
-    }
+    } catch {}
+
+    setStatusNotification('AI curation active via scheduled intelligence pipeline.');
+    setTimeout(() => setStatusNotification(null), 3000);
+    setIsCurating(false);
   };
 
   // Generate / Refresh Daily Briefing
@@ -154,15 +283,14 @@ export default function Home() {
     setIsBriefingLoading(true);
     try {
       const res = await fetch('/api/briefing', { method: 'POST' });
-      const data = await res.json();
-      if (data.success) {
-        setBriefing(data.briefing);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setBriefing(data.briefing);
+        }
       }
-    } catch (err) {
-      console.error('Failed to generate briefing:', err);
-    } finally {
-      setIsBriefingLoading(false);
-    }
+    } catch {}
+    setIsBriefingLoading(false);
   };
 
   // Toggle Bookmark
@@ -173,15 +301,27 @@ export default function Home() {
       )
     );
 
+    // Save to localStorage for static GitHub Pages support
+    try {
+      let saved: string[] = [];
+      const stored = localStorage.getItem('aifeed_bookmarks');
+      if (stored) saved = JSON.parse(stored);
+      if (saved.includes(id)) {
+        saved = saved.filter((bId) => bId !== id);
+      } else {
+        saved.push(id);
+      }
+      localStorage.setItem('aifeed_bookmarks', JSON.stringify(saved));
+    } catch {}
+
+    // Try backend API if present
     try {
       await fetch('/api/feed', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, action: 'bookmark' }),
       });
-    } catch (err) {
-      console.error('Failed to toggle bookmark:', err);
-    }
+    } catch {}
   };
 
   return (

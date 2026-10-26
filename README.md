@@ -8,9 +8,9 @@ A real-time, curated AI feed that filters out academic noise and brings you **pr
 
 ## 🌐 Live Access
 
-- **Public Live URL**: [https://accomplished-scheme-turner-compilation.trycloudflare.com](https://accomplished-scheme-turner-compilation.trycloudflare.com)
-- **Local Dashboard**: `http://localhost:3000`
+- **GitHub Pages (Permanent Public URL)**: [https://yugjain.github.io/AIfeed](https://yugjain.github.io/AIfeed)
 - **GitHub Repository**: [https://github.com/yugjain/AIfeed](https://github.com/yugjain/AIfeed)
+- **Local Dashboard**: `http://localhost:3000`
 
 ---
 
