@@ -1,4 +1,4 @@
-:HL["/AIfeed/_next/static/chunks/2d9a9p6kz3_f6.css","style"]
+:HL["/AIfeed/_next/static/chunks/0v8-ehla93mdl.css","style"]
 2:[["children",{"s":"__PAGE__","h":160}]]
 1:[["children",{"s":"/_not-found","h":96,"c":"$Q2"}]]
-0:{"b":"TD2mG36xnyD9LIf2-QyA7","t":{"t":{"s":"","h":80,"c":"$Q1"}}}
+0:{"b":"2WOEwJ1gcSGmPWr0N7e8d","t":{"t":{"s":"","h":80,"c":"$Q1"}}}
