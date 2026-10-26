@@ -168,7 +168,11 @@ export default function Home() {
             const storeData = await staticRes.json();
             staticStoreRef.current = storeData;
             if (storeData.settings?.executive_briefing && !briefing) {
-              setBriefing(storeData.settings.executive_briefing);
+              let b = storeData.settings.executive_briefing;
+              if (typeof b === 'string') {
+                try { b = JSON.parse(b); } catch {}
+              }
+              setBriefing(b);
             }
             filterStaticItems(storeData.items || [], currentPage, append);
             return;
@@ -215,7 +219,11 @@ export default function Home() {
         const storeData = await staticRes.json();
         staticStoreRef.current = storeData;
         if (storeData.settings?.executive_briefing) {
-          setBriefing(storeData.settings.executive_briefing);
+          let b = storeData.settings.executive_briefing;
+          if (typeof b === 'string') {
+            try { b = JSON.parse(b); } catch {}
+          }
+          setBriefing(b);
         }
       }
     } catch {}
